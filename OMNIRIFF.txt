@@ -1,0 +1,62 @@
+Lego Island JUKEBOX.SI format
+
+RIFF based
+
+"RIFF"      RIFF magic
+4 bytes     RIFF size
+"OMNI"      RIFF OMNI data
+
+Most blocks are just a 4 byte type and a 4 byte size, except LIST blocks also
+contain a subtype following the size.  Sizes are the entire size of the contents
+of the block.  LIST blocks include the subtype as part of the size.
+
+Node blocks which contain additional blocks:
+LIST
+    Subtypes:
+    MxSt - Set of objects?
+    MxDa - Data within a set of chunks?
+MxSt - Set of chunks?
+
+Leaf blocks which contain data:
+MxHd - Some kind of header
+MxOf - Some kind of list of offsets of interest in to the file?
+MxOb - Description of a set of chunks? (object?)
+    1 byte      type: 4 for audio, 7 for video
+    6 bytes     padding?
+    n bytes     null terminated string name of object
+    4 bytes     track number?
+    4 bytes     unknown, always 34 or 36?
+    4 bytes     always 0
+    4 bytes     unknown
+    4 bytes     some kind of multiple related to previous value?
+    46 bytes    always 0
+    4 bytes     unknown, always 0x3FF0?
+    12 bytes    always 0
+    4 bytes     unknown, always 0x4FF0?
+    8 bytes     always 0
+    n bytes     null terminated file name of object
+    8 bytes     always 0
+    4 bytes     always 1?
+    4 bytes     format?  always " WAV"
+    4 bytes     always 1?
+    4 bytes     always 0?
+    4 bytes     unknown, usually 79 but for one track it's 30
+MxCh - Chunk of data
+    2 bytes     usually 0, sometimes 16, last chunk is always 2, some kind of
+                type?
+    4 bytes     the track number again?
+    4 bytes     maybe a timestamp?
+    4 bytes     chunk size but first partial chunk indicates the full size
+                including subsequent partial chunks
+    First chunk contains additional fields:
+        WAVE fmt header:
+        2 bytes     data type/encoding
+        2 bytes     channels
+        4 bytes     sample rate
+        4 bytes     bytes per second
+        2 bytes     bytes per sample*channels
+        2 bytes     bits per sample
+
+        4 bytes     total data size?
+        4 bytes     unknown, always 44, RIFF header size?
+pad  - Padding
