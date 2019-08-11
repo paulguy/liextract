@@ -10,55 +10,73 @@
 
 #define OMNI_TRACK_TYPE_AUDIO (4)
 #define OMNI_TRACK_TYPE_VIDEO (7)
+#define OMNI_TRACK_TYPE_FLIC  (3)
 
 #define OMNI_CHUNK_HEADER_SIZE (14)
+#define OMNI_CHUNK_VIDEO_HEADER_SIZE (20)
 
 #define OMNI_CHUNK_TYPE_DATA (0)
 #define OMNI_CHUNK_TYPE_PARTIAL (16)
 #define OMNI_CHUNK_TYPE_LAST (2)
 
-char WAVHeader[] = {'R', 'I', 'F', 'F', /* 4 */
-                    0  , 0  , 0  , 0  , /* 8 file size following */
-                    'W', 'A', 'V', 'E', /* 12 */
-                    'f', 'm', 't', ' ', /* 16 */
-                    16 , 0  , 0  , 0  , /* 20 always 16 in this case */
-                    0  , 0  ,           /* 22 */
-                    0  , 0  ,           /* 24 */
-                    0  , 0  , 0  , 0  , /* 28 */
-                    0  , 0  , 0  , 0  , /* 32 */
-                    0  , 0  ,           /* 34 */
-                    0  , 0  ,           /* 36 */
-                    'd', 'a', 't', 'a', /* 40 */
-                    0  , 0  , 0  , 0  };/* 44 */ /* file size following */
+const char WAVType[] = {'W', 'A', 'V', 'E'};
+const char fmtHdr[] = {'f', 'm', 't', ' '};
+const char dataHdr[] = {'d', 'a', 't', 'a'};
+typedef struct {
+    char RIFF[4];
+    int fileSize;
+    char WAVE[4];
+    char fmt[4];
+    int fmtSize;
+    short int format;
+    short int channels;
+    int sampleRate;
+    int bytesPerSecond;
+    short int bytesPerSample;
+    short int bitsPerSample;
+    char data[4];
+    int dataSize;
+} WAVHeader;
 
-#define WAV_FILE_SIZE_OFFSET    (4)
-#define WAV_FORMAT_OFFSET       (20)
-#define WAV_CHANNELS_OFFSET     (22)
-#define WAV_SAMPLERATE_OFFSET   (24)
-#define WAV_BYTESSEC_OFFSET     (28)
-#define WAV_BYTESSAMP_OFFSET    (32)
-#define WAV_BITSSAMP_OFFSET     (34)
-#define WAV_DATA_SIZE_OFFSET    (40)
+#define WAV_FILE_SIZE_OFFSET (4)
+#define WAV_DATA_SIZE_OFFSET (40)
+#define WAV_FILE_SIZE_ADD    (sizeof(WAVHeader) - 8)
 
-#define WAV_HEADER_SIZE         (36)    /* offset to add for total file size */
+typedef struct __attribute__((packed)) {
+    int dataSize;
+    short int type;
+    short int frames;
+    short int width;
+    short int height;
+    short int depth;
+    short int flags;
+    int speed;
+    short int reserved0;
+    int created;
+    int creator;
+    int updated;
+    int updator;
+    short int aspectX;
+    short int aspectY;
+    char extended[14];
+    char reserved1[24];
+    int firstFrame;
+    int secondFrame;
+    char reserved2[40];
+} FLCHeader;
 
 typedef struct {
     unsigned int size;
     unsigned char data[22064];
-    unsigned char *audio;
 
     /* required fields */
     short int chunkType;
     int trackNum;
-    int unk0;
+    int timestamp;
     int hdrSize;
 } Chunk;
 
 typedef struct {
-    char MxOb[1024];
-    int index;
-
-    /* MxOb data */
     char *trackName;
     int trackType;
     int trackNum;
@@ -67,20 +85,34 @@ typedef struct {
     int unk2;
     int unk3;
     int unk4;
+
+    /* for video types, these values are not in the main MxOb */
     char *fileName;
     char format[4];
     int unk5;
 
-    /* fields from first chunk */
-    /* WAV fmt header */
-    short int fmtType;
-    short int fmtChans;
-    int fmtRate;
-    int fmtBytesPerSecond;
-    short int fmtBytesPerSample;
-    short int fmtBitsPerSample;
+    /* additional fields for FLIC type */
+    short int unk6;
+    int unk7;
+    int unk8;
+    int unk9;
+} MxOb;
 
-    int hdrDataSize;
+typedef struct {
+    unsigned char MxOb[1024];
+    int index;
+
+    MxOb mainMxOb;
+    MxOb videoMxOb;
+    MxOb audioMxOb;
+
+    /* fields from first audio chunk */
+    /* WAV fmt header */
+    WAVHeader wav;
+
+    /* fields from first video chunk */
+    /* FLIC header */
+    FLCHeader flc;
 
     Chunk *c;
     unsigned int chunks;
@@ -116,10 +148,53 @@ int print_entry_cb(RIFFFile *r, int dir, int ent, void *priv) {
     return(0);
 }
 
+void populate_mxob(MxOb *o, unsigned char *buf, Track *t) {
+    int dataPos = 0;
+    int len;
+
+    o->trackType = INT_FROM_ARRAY(buf, 0);
+
+    o->trackName = (char *)&(buf[7]);
+    dataPos = 7 + strlen(o->trackName) + 1;
+
+    o->trackNum = INT_FROM_ARRAY(buf, dataPos);
+    o->unk0 = INT_FROM_ARRAY(buf, dataPos + 4);
+    o->unk1 = INT_FROM_ARRAY(buf, dataPos + 12);
+    o->unk2 = INT_FROM_ARRAY(buf, dataPos + 16);
+    if(o->trackType == OMNI_TRACK_TYPE_FLIC) {
+        o->unk6 = SHORT_FROM_ARRAY(buf, dataPos + 24);
+        o->unk7 = INT_FROM_ARRAY(buf, dataPos + 26);
+        o->unk8 = INT_FROM_ARRAY(buf, dataPos + 34);
+        o->unk9 = INT_FROM_ARRAY(buf, dataPos + 42);
+    }
+    o->unk3 = INT_FROM_ARRAY(buf, dataPos + 66);
+    o->unk4 = INT_FROM_ARRAY(buf, dataPos + 82);
+    if(o->trackType != OMNI_TRACK_TYPE_VIDEO) {
+        o->fileName = (char *)&(buf[dataPos + 94]);
+        dataPos += 94 + strlen(o->fileName) + 1;
+        memcpy(o->format, &(buf[dataPos + 12]), sizeof(o->format));
+        if(t != NULL) { /* not available if it's a member of a video track */
+            o->unk5 = INT_FROM_ARRAY(buf, dataPos + 24);
+        }
+    } else {
+        if(t == NULL) {
+            fprintf(stderr, "Track is null?\n");
+            return;
+        }
+        dataPos += 94 + 12; /* skip over MxOb chunk and LIST header*/
+        o->unk5 = INT_FROM_ARRAY(buf, dataPos);
+        len = INT_FROM_ARRAY(buf, dataPos + 8); /* read length of MxCh chunk */
+        len += (len % 2) ? 1 : 0; /* advertises 185 but should be 186, assume these also need 2 byte alignment for length like other chunks */
+        dataPos += 12; /* skip over value and MxOb header */
+        populate_mxob(&(t->videoMxOb), &(buf[dataPos]), NULL);
+        dataPos += len + 8; /* skip over MxOb chunk and next header */
+        populate_mxob(&(t->audioMxOb), &(buf[dataPos]), NULL);
+    }
+}
+
 int get_track_info_cb(RIFFFile *r, int dir, int ent, void *priv) {
     int index = RIFF_ENTRY(r, dir, ent);
     Track *t = priv;
-    int dataPos;
 
     if(r->root[index].size > sizeof(t->MxOb)) {
         fprintf(stderr, "MxOb too big.\n");
@@ -136,21 +211,7 @@ int get_track_info_cb(RIFFFile *r, int dir, int ent, void *priv) {
         return(-1);
     }
 
-    t->trackType = INT_FROM_ARRAY(t->MxOb, 0);
-
-    t->trackName = &(t->MxOb[7]);
-    dataPos = 7 + strlen(t->trackName) + 1;
-
-    t->trackNum = INT_FROM_ARRAY(t->MxOb, dataPos);
-    t->unk0 = INT_FROM_ARRAY(t->MxOb, dataPos + 4);
-    t->unk1 = INT_FROM_ARRAY(t->MxOb, dataPos + 12);
-    t->unk2 = INT_FROM_ARRAY(t->MxOb, dataPos + 16);
-    t->unk3 = INT_FROM_ARRAY(t->MxOb, dataPos + 66);
-    t->unk4 = INT_FROM_ARRAY(t->MxOb, dataPos + 82);
-    t->fileName = &(t->MxOb[dataPos + 94]);
-    dataPos += 94 + strlen(t->fileName) + 1;
-    memcpy(t->format, &(t->MxOb[dataPos + 12]), sizeof(t->format));
-    t->unk5 = INT_FROM_ARRAY(t->MxOb, dataPos + 24);
+    populate_mxob(&(t->mainMxOb), t->MxOb, t);
 
     return(1); /* stop searching */
 }
@@ -174,58 +235,85 @@ int read_chunks_cb(RIFFFile *r, int dir, int ent, void *priv) {
     Track *t = priv;
     Chunk *c;
     int index = RIFF_ENTRY(r, dir, ent);
+    unsigned char *body;
 
     if(r->root[index].size > sizeof(c->data)) {
         fprintf(stderr, "Chunk data too large.\n");
-        return(-1);
+        goto error;
     }
 
     if(riff_entry_seekto(r, index) < 0) {
         fprintf(stderr, "Failed to seek to MxCh.\n");
-        return(-1);
+        goto error;
     }
 
     c = track_grow(t);
     if(c == NULL) {
-        return(-1);
+        goto error;
     }
 
     c->size = r->root[index].size;
     if(fread(c->data, 1, c->size, r->f) < c->size) {
         fprintf(stderr, "Failed to read MxCh.\n");
-        return(-1);
+        goto error;
     }
 
     c->chunkType = SHORT_FROM_ARRAY(c->data, 0);
     c->trackNum = INT_FROM_ARRAY(c->data, 2);
-    c->unk0 = INT_FROM_ARRAY(c->data, 6);
+    c->timestamp = INT_FROM_ARRAY(c->data, 6);
     c->hdrSize = INT_FROM_ARRAY(c->data, 10);
 
+    /* this pointer may become invalid later, but it will be assigned again */
+    body = &(c->data[OMNI_CHUNK_HEADER_SIZE]);
+    if(
+          (
+              (
+                  t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
+                  c->trackNum == t->audioMxOb.trackNum
+              ) || (
+                  t->mainMxOb.trackType == OMNI_TRACK_TYPE_AUDIO
+              )
+          ) && t->wav.dataSize == 0
+      ) {
+        t->wav.format = SHORT_FROM_ARRAY(body, 0);
+        t->wav.channels = SHORT_FROM_ARRAY(body, 2);
+        t->wav.sampleRate = INT_FROM_ARRAY(body, 4);
+        t->wav.bytesPerSecond = INT_FROM_ARRAY(body, 8);
+        t->wav.bytesPerSample = SHORT_FROM_ARRAY(body, 12);
+        t->wav.bitsPerSample = SHORT_FROM_ARRAY(body, 14);
+        t->wav.dataSize = -1;
+        t->wav.fileSize = -1;
+    } else if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
+              c->trackNum == t->videoMxOb.trackNum) {
+        if(t->flc.dataSize == 0) {
+            t->flc.dataSize = INT_FROM_ARRAY(body, 0);
+            t->flc.type = SHORT_FROM_ARRAY(body, 4);
+            t->flc.frames = SHORT_FROM_ARRAY(body, 6);
+            t->flc.width = SHORT_FROM_ARRAY(body, 8);
+            t->flc.height = SHORT_FROM_ARRAY(body, 10);
+            t->flc.depth = SHORT_FROM_ARRAY(body, 12);
+            t->flc.flags = SHORT_FROM_ARRAY(body, 14);
+            t->flc.speed = INT_FROM_ARRAY(body, 16);
+            t->flc.created = INT_FROM_ARRAY(body, 22);
+            t->flc.creator = INT_FROM_ARRAY(body, 26);
+            t->flc.updated = INT_FROM_ARRAY(body, 30);
+            t->flc.updator = INT_FROM_ARRAY(body, 34);
+            t->flc.aspectX = SHORT_FROM_ARRAY(body, 38);
+            t->flc.aspectY = SHORT_FROM_ARRAY(body, 40);
+            t->flc.firstFrame = INT_FROM_ARRAY(body, 80);
+            t->flc.secondFrame = INT_FROM_ARRAY(body, 84);
+        }
+    }
+
     return(0);
+
+error:
+    if(t->c != NULL) free(t->c);
+    return(-1);
 }
 
-int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
-    Track *t = priv;
-    t->index = RIFF_ENTRY(r, dir, ent);
-    unsigned int i;
-    FILE *outFile;
-    unsigned int toWrite, written;
-
-    t->trackType = 0;
-    t->chunks = 0;
-    t->c = NULL;
-
-    if(do_traverse(r, "MxOb", get_track_info_cb, t, 0, t->index) < 0) {
-        return(-1);
-    }
-
-    if(t->trackType == 0) {
-        fprintf(stderr, "Failed to find MxOb.\n");
-        return(-1);
-    }
-
+void print_mxob(MxOb *o) {
     fprintf(stderr, "Name: %s\n"
-                    "Index: %d\n"
                     "Type: %d\n"
                     "Track num: %d\n"
                     "Unknown 0: %d\n"
@@ -233,93 +321,179 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
                     "Unknown 2: %d\n"
                     "Unknown 3: %08X\n"
                     "Unknown 4: %08X\n",
-                    t->trackName,
-                    t->index,
-                    t->trackType,
-                    t->trackNum,
-                    t->unk0,
-                    t->unk1,
-                    t->unk2,
-                    t->unk3,
-                    t->unk4);
+                    o->trackName,
+                    o->trackType,
+                    o->trackNum,
+                    o->unk0,
+                    o->unk1,
+                    o->unk2,
+                    o->unk3,
+                    o->unk4);
+}
 
-    if(t->trackType != OMNI_TRACK_TYPE_AUDIO) {
-        fprintf(stderr, "Video tracks aren't supported.\n\n");
-        return(0);
+int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
+    Track *t = priv;
+    t->index = RIFF_ENTRY(r, dir, ent);
+    unsigned int i;
+    FILE *outWAV = NULL;
+    FILE *outFLC = NULL;
+    unsigned char *body;
+    unsigned int toWrite, audioWritten, videoWritten;
+
+    t->mainMxOb.trackType = 0;
+
+    if(do_traverse(r, "MxOb", get_track_info_cb, t, 0, t->index) < 0) {
+        goto error0;
     }
 
-    fprintf(stderr, "File name: %s\n", t->fileName);
-    fprintf(stderr, "Unknown 5: %d\n",
-                    t->unk5);
+    if(t->mainMxOb.trackType == 0) {
+        fprintf(stderr, "Failed to find MxOb.\n");
+        goto error0;
+    }
+
+    fprintf(stderr, "Index: %d\n"
+                    "Main MxOb\n",
+                    t->index);
+    print_mxob(&(t->mainMxOb));
+
+    if(t->mainMxOb.trackType != OMNI_TRACK_TYPE_VIDEO) {
+        fprintf(stderr, "File name: %s\n"
+                        "Unknown 5: %d\n",
+                        t->mainMxOb.fileName,
+                        t->mainMxOb.unk5);
+    } else {
+        fprintf(stderr, "Unknown 5: %d\n",
+                        t->mainMxOb.unk5);
+        fprintf(stderr, "FLIC MxOb\n");
+        print_mxob(&(t->videoMxOb));
+        fprintf(stderr, "File name: %s\n"
+                        "Unknown 5: %d\n"
+                        "Unknown 6: %hd\n"
+                        "Unknown 7: %d\n"
+                        "Unknown 8: %d\n"
+                        "Unknown 9: %d\n",
+                        t->videoMxOb.fileName,
+                        t->videoMxOb.unk5,
+                        t->videoMxOb.unk6,
+                        t->videoMxOb.unk7,
+                        t->videoMxOb.unk8,
+                        t->videoMxOb.unk9);
+        fprintf(stderr, "WAVE MxOb\n");
+        print_mxob(&(t->audioMxOb));
+        fprintf(stderr, "File name: %s\n"
+                        "Unknown 5: %d\n",
+                        t->audioMxOb.fileName,
+                        t->audioMxOb.unk5);
+   }
+
+    /* allow the callback to detect whether the audio format fields have been
+    populated */
+    t->wav.dataSize = 0;
+    t->flc.dataSize = 0;
+    t->chunks = 0;
+    t->c = NULL;
 
     if(do_traverse(r, "MxDaMxCh", read_chunks_cb, t, 0, t->index) < 0) {
-        return(-1);
+        goto error0;
     }
 
-    fprintf(stderr, "read %d chunks.\n", t->chunks);
+    fprintf(stderr, "Read %d chunks.\n", t->chunks);
 
-    outFile = fopen(t->trackName, "wb");
-    if(outFile == NULL) {
-        fprintf(stderr, "Failed to open file %s for writing.\n", t->trackName);
-        return(-1);
-    }
-
-    written = 0;
+    audioWritten = 0;
+    videoWritten = 0;
     for(i = 0; i < t->chunks; i++) {
-        t->c[i].audio = &(t->c[i].data[OMNI_CHUNK_HEADER_SIZE]);
-        if(i == 0) {
-            t->fmtType = SHORT_FROM_ARRAY(t->c[0].audio, 0);
-            t->fmtChans = SHORT_FROM_ARRAY(t->c[0].audio, 2);
-            t->fmtRate = INT_FROM_ARRAY(t->c[0].audio, 4);
-            t->fmtBytesPerSecond = INT_FROM_ARRAY(t->c[0].audio, 8);
-            t->fmtBytesPerSample = SHORT_FROM_ARRAY(t->c[0].audio, 12);
-            t->fmtBitsPerSample = SHORT_FROM_ARRAY(t->c[0].audio, 14);
-            INT_FROM_ARRAY(WAVHeader, WAV_FILE_SIZE_OFFSET) = -1;
-            SHORT_FROM_ARRAY(WAVHeader, WAV_FORMAT_OFFSET) = t->fmtType;
-            SHORT_FROM_ARRAY(WAVHeader, WAV_CHANNELS_OFFSET) = t->fmtChans;
-            INT_FROM_ARRAY(WAVHeader, WAV_SAMPLERATE_OFFSET) = t->fmtRate;
-            INT_FROM_ARRAY(WAVHeader, WAV_BYTESSEC_OFFSET) = t->fmtBytesPerSecond;
-            SHORT_FROM_ARRAY(WAVHeader, WAV_BYTESSAMP_OFFSET) = t->fmtBytesPerSample;
-            SHORT_FROM_ARRAY(WAVHeader, WAV_BITSSAMP_OFFSET) = t->fmtBitsPerSample;
-            INT_FROM_ARRAY(WAVHeader, WAV_DATA_SIZE_OFFSET) = -1;
-            if(fwrite(WAVHeader, 1, sizeof(WAVHeader), outFile) < sizeof(WAVHeader)) {
-                fprintf(stderr, "Failed to write WAV header.\n");
-                return(-1);
-            }
-        } else {
-            if(t->c[i].chunkType != OMNI_CHUNK_TYPE_LAST) {
-                toWrite = t->c[i].size - OMNI_CHUNK_HEADER_SIZE;
-                if(fwrite(t->c[i].audio, 1, toWrite, outFile) < toWrite) {
-                    fprintf(stderr, "Failed to write audio data: %s\n", strerror(errno));
-                    return(-1);
+        if(
+              (
+                  t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
+                  t->c[i].trackNum == t->audioMxOb.trackNum
+              ) || (
+                  t->mainMxOb.trackType == OMNI_TRACK_TYPE_AUDIO
+              )
+          ) {
+            if(outWAV == NULL) {
+                if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_AUDIO) {
+                    outWAV = fopen(t->mainMxOb.trackName, "wb");
+                } else {
+                    outWAV = fopen(t->audioMxOb.trackName, "wb");
                 }
-                written += toWrite;
+                if(outWAV == NULL) {
+                    fprintf(stderr, "Failed to open file %s for writing.\n", t->mainMxOb.trackName);
+                    goto error1;
+                }
+
+                if(fwrite(&(t->wav), 1, sizeof(t->wav), outWAV) < sizeof(t->wav)) {
+                    fprintf(stderr, "Failed to write WAV header.\n");
+                    goto error1;
+                }
+            } else if(t->c[i].chunkType != OMNI_CHUNK_TYPE_LAST) { /* don't write first or last chunks */
+                body = &(t->c[i].data[OMNI_CHUNK_HEADER_SIZE]);
+                toWrite = t->c[i].size - OMNI_CHUNK_HEADER_SIZE;
+                if(fwrite(body, 1, toWrite, outWAV) < toWrite) {
+                    fprintf(stderr, "Failed to write audio data: %s\n", strerror(errno));
+                    goto error1;
+                }
+                audioWritten += toWrite;
+            }
+        } else if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
+                  t->c[i].trackNum == t->videoMxOb.trackNum) {
+            if(outFLC == NULL) {
+                outFLC = fopen(t->videoMxOb.trackName, "wb");        
+                if(outFLC == NULL) {
+                    fprintf(stderr, "Failed to open file %s for writing.\n", t->mainMxOb.trackName);
+                    goto error1;
+                }
+
+                if(fwrite(&(t->flc), 1, sizeof(t->flc), outFLC) < sizeof(t->flc)) {
+                    fprintf(stderr, "Failed to write WAV header.\n");
+                    goto error1;
+                }
+            } else if(t->c[i].chunkType != OMNI_CHUNK_TYPE_LAST) { /* same */
+                body = &(t->c[i].data[OMNI_CHUNK_HEADER_SIZE + OMNI_CHUNK_VIDEO_HEADER_SIZE]);
+                toWrite = t->c[i].size - OMNI_CHUNK_HEADER_SIZE - OMNI_CHUNK_VIDEO_HEADER_SIZE;
+                if(fwrite(body, 1, toWrite, outFLC) < toWrite) {
+                    fprintf(stderr, "Failed to write audio data: %s\n", strerror(errno));
+                    goto error1;
+                }
+                videoWritten += toWrite;
             }
         }
     }
-    if(fseeko(outFile, WAV_DATA_SIZE_OFFSET, SEEK_SET) < 0) {
-        fprintf(stderr, "Failed to seek to data header.\n");
-        return(-1);
-    }
-    if(fwrite(&written, 1, sizeof(int), outFile) < sizeof(int)) {
-        fprintf(stderr, "Failed to write data size.\n");
-        return(-1);
-    }
-    written += WAV_HEADER_SIZE;
-    if(fseeko(outFile, WAV_FILE_SIZE_OFFSET, SEEK_SET) < 0) {
-        fprintf(stderr, "Failed to seek to WAV header.\n");
-        return(-1);
-    }
-    if(fwrite(&written, 1, sizeof(int), outFile) < sizeof(int)) {
-        fprintf(stderr, "Failed to write file size.\n");
-        return(-1);
-    }
-    fclose(outFile);
-    fprintf(stderr, "Wrote to %s.\n", t->trackName);
 
+    fprintf(stderr, "%d %d %d %d\n", audioWritten, t->wav.dataSize,
+                                     videoWritten + 128, t->flc.dataSize);
+
+    if(fseeko(outWAV, WAV_DATA_SIZE_OFFSET, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to WAV data size offset.\n");
+        goto error1;
+    }
+    if(fwrite(&audioWritten, 1, sizeof(int), outWAV) < sizeof(int)) {
+        fprintf(stderr, "Failed to write WAV data size.\n");
+        goto error1;
+    }
+    audioWritten += WAV_FILE_SIZE_ADD;
+    if(fseeko(outWAV, WAV_FILE_SIZE_OFFSET, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to WAV file size offset.\n");
+        goto error1;
+    }
+    if(fwrite(&audioWritten, 1, sizeof(int), outWAV) < sizeof(int)) {
+        fprintf(stderr, "Failed to write WAV file size.\n");
+        goto error1;
+    }
+
+    if(outFLC) fclose(outFLC);
+    if(outWAV) fclose(outWAV);
     free(t->c);
 
+    fprintf(stderr, "Wrote to %s.\n\n", t->mainMxOb.trackName);
+
     return(0);
+
+error1:
+    if(outFLC) fclose(outFLC);
+    if(outWAV) fclose(outWAV);
+    free(t->c);
+error0:
+    return(-1);
 }
 
 void usage(const char *argv0) {
@@ -356,6 +530,16 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Failed to traverse file.\n");
         }
     } else {
+        /* set up initial fields in track */
+        memcpy(t.wav.RIFF, RIFFMagic, sizeof(t.wav.RIFF));
+        memcpy(t.wav.WAVE, WAVType, sizeof(t.wav.WAVE));
+        memcpy(t.wav.fmt, fmtHdr, sizeof(t.wav.fmt));
+        t.wav.fmtSize = 16;
+        memcpy(t.wav.data, dataHdr, sizeof(t.wav.data));
+        t.flc.reserved0 = 0;
+        memset(t.flc.extended, 0, sizeof(t.flc.extended));
+        memset(t.flc.reserved1, 0, sizeof(t.flc.reserved1));
+        memset(t.flc.reserved2, 0, sizeof(t.flc.reserved2));
         if(riff_traverse(r, "MxStMxSt", dump_song_cb, &t) < 0) {
             fprintf(stderr, "Failed to traverse file.\n");
         }
