@@ -300,7 +300,8 @@ int do_traverse(RIFFFile *r,
             if(matchAll) {
                 ret = match_cb(r, dir, i, priv);
                 if(ret) return(ret);
-                do_traverse(r, NULL, match_cb, priv, matchAll, index + i);
+                ret = do_traverse(r, NULL, match_cb, priv, matchAll, index + i);
+                if(ret) return(ret);
             } else {
                 if(isLIST(r->root[index + i].fourCC)) {
                     fourCC = r->root[index + i].fourCC2;
@@ -314,7 +315,8 @@ int do_traverse(RIFFFile *r,
                         ret = match_cb(r, dir, i, priv);
                         if(ret) return(ret);
                     } else {
-                        do_traverse(r, &(pattern[4]), match_cb, priv, matchAll, index + i);
+                        ret = do_traverse(r, &(pattern[4]), match_cb, priv, matchAll, index + i);
+                        if(ret) return(ret);
                     }
                 }
             }

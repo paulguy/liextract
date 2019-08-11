@@ -10,7 +10,7 @@
 
 #define OMNI_TRACK_TYPE_AUDIO (4)
 #define OMNI_TRACK_TYPE_VIDEO (7)
-#define OMNI_TRACK_TYPE_FLIC  (3)
+#define OMNI_TRACK_TYPE_RAW   (3)
 
 #define OMNI_CHUNK_HEADER_SIZE (14)
 #define OMNI_CHUNK_VIDEO_HEADER_SIZE (20)
@@ -22,6 +22,7 @@
 const char WAVType[] = {'W', 'A', 'V', 'E'};
 const char fmtHdr[] = {'f', 'm', 't', ' '};
 const char dataHdr[] = {'d', 'a', 't', 'a'};
+
 typedef struct {
     char RIFF[4];
     int fileSize;
@@ -42,32 +43,9 @@ typedef struct {
 #define WAV_DATA_SIZE_OFFSET (40)
 #define WAV_FILE_SIZE_ADD    (sizeof(WAVHeader) - 8)
 
-typedef struct __attribute__((packed)) {
-    int dataSize;
-    short int type;
-    short int frames;
-    short int width;
-    short int height;
-    short int depth;
-    short int flags;
-    int speed;
-    short int reserved0;
-    int created;
-    int creator;
-    int updated;
-    int updator;
-    short int aspectX;
-    short int aspectY;
-    char extended[14];
-    char reserved1[24];
-    int firstFrame;
-    int secondFrame;
-    char reserved2[40];
-} FLCHeader;
-
 typedef struct {
     unsigned int size;
-    unsigned char data[22064];
+    unsigned char data[65536];
 
     /* required fields */
     short int chunkType;
@@ -76,9 +54,11 @@ typedef struct {
     int hdrSize;
 } Chunk;
 
+const char FLCfmt[] = {' ', 'F', 'L', 'C'};
+
 typedef struct {
     char *trackName;
-    int trackType;
+    short int trackType;
     int trackNum;
     int unk0;
     int unk1;
@@ -109,10 +89,6 @@ typedef struct {
     /* fields from first audio chunk */
     /* WAV fmt header */
     WAVHeader wav;
-
-    /* fields from first video chunk */
-    /* FLIC header */
-    FLCHeader flc;
 
     Chunk *c;
     unsigned int chunks;
@@ -152,16 +128,29 @@ void populate_mxob(MxOb *o, unsigned char *buf, Track *t) {
     int dataPos = 0;
     int len;
 
-    o->trackType = INT_FROM_ARRAY(buf, 0);
+    o->trackType = SHORT_FROM_ARRAY(buf, 0);
 
-    o->trackName = (char *)&(buf[7]);
-    dataPos = 7 + strlen(o->trackName) + 1;
+    /* If there's a string directly after the value, discard it. */
+    for(dataPos = 2; dataPos < 32; dataPos++) { /* some arbitrary value */
+        if(buf[dataPos] == 0) {
+            break;
+        }
+    }
+    /* find the start of the name */
+    for(; dataPos < 32; dataPos++) {
+        if(buf[dataPos] != 0) {
+            break;
+        }
+    }
+
+    o->trackName = (char *)&(buf[dataPos]);
+    dataPos += strlen(o->trackName) + 1;
 
     o->trackNum = INT_FROM_ARRAY(buf, dataPos);
     o->unk0 = INT_FROM_ARRAY(buf, dataPos + 4);
     o->unk1 = INT_FROM_ARRAY(buf, dataPos + 12);
     o->unk2 = INT_FROM_ARRAY(buf, dataPos + 16);
-    if(o->trackType == OMNI_TRACK_TYPE_FLIC) {
+    if(o->trackType == OMNI_TRACK_TYPE_RAW) {
         o->unk6 = SHORT_FROM_ARRAY(buf, dataPos + 24);
         o->unk7 = INT_FROM_ARRAY(buf, dataPos + 26);
         o->unk8 = INT_FROM_ARRAY(buf, dataPos + 34);
@@ -283,26 +272,6 @@ int read_chunks_cb(RIFFFile *r, int dir, int ent, void *priv) {
         t->wav.bitsPerSample = SHORT_FROM_ARRAY(body, 14);
         t->wav.dataSize = -1;
         t->wav.fileSize = -1;
-    } else if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
-              c->trackNum == t->videoMxOb.trackNum) {
-        if(t->flc.dataSize == 0) {
-            t->flc.dataSize = INT_FROM_ARRAY(body, 0);
-            t->flc.type = SHORT_FROM_ARRAY(body, 4);
-            t->flc.frames = SHORT_FROM_ARRAY(body, 6);
-            t->flc.width = SHORT_FROM_ARRAY(body, 8);
-            t->flc.height = SHORT_FROM_ARRAY(body, 10);
-            t->flc.depth = SHORT_FROM_ARRAY(body, 12);
-            t->flc.flags = SHORT_FROM_ARRAY(body, 14);
-            t->flc.speed = INT_FROM_ARRAY(body, 16);
-            t->flc.created = INT_FROM_ARRAY(body, 22);
-            t->flc.creator = INT_FROM_ARRAY(body, 26);
-            t->flc.updated = INT_FROM_ARRAY(body, 30);
-            t->flc.updator = INT_FROM_ARRAY(body, 34);
-            t->flc.aspectX = SHORT_FROM_ARRAY(body, 38);
-            t->flc.aspectY = SHORT_FROM_ARRAY(body, 40);
-            t->flc.firstFrame = INT_FROM_ARRAY(body, 80);
-            t->flc.secondFrame = INT_FROM_ARRAY(body, 84);
-        }
     }
 
     return(0);
@@ -389,7 +358,6 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
     /* allow the callback to detect whether the audio format fields have been
     populated */
     t->wav.dataSize = 0;
-    t->flc.dataSize = 0;
     t->chunks = 0;
     t->c = NULL;
 
@@ -436,6 +404,10 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
             }
         } else if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_VIDEO &&
                   t->c[i].trackNum == t->videoMxOb.trackNum) {
+            /* first chunk is just a verbatim copy */
+            body = &(t->c[i].data[OMNI_CHUNK_HEADER_SIZE]);
+            toWrite = t->c[i].size - OMNI_CHUNK_HEADER_SIZE;
+
             if(outFLC == NULL) {
                 outFLC = fopen(t->videoMxOb.trackName, "wb");        
                 if(outFLC == NULL) {
@@ -443,13 +415,18 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
                     goto error1;
                 }
 
-                if(fwrite(&(t->flc), 1, sizeof(t->flc), outFLC) < sizeof(t->flc)) {
-                    fprintf(stderr, "Failed to write WAV header.\n");
+                if(fwrite(body, 1, toWrite, outFLC) < toWrite) {
+                    fprintf(stderr, "Failed to write audio data: %s\n", strerror(errno));
                     goto error1;
                 }
+                videoWritten += toWrite;
             } else if(t->c[i].chunkType != OMNI_CHUNK_TYPE_LAST) { /* same */
-                body = &(t->c[i].data[OMNI_CHUNK_HEADER_SIZE + OMNI_CHUNK_VIDEO_HEADER_SIZE]);
-                toWrite = t->c[i].size - OMNI_CHUNK_HEADER_SIZE - OMNI_CHUNK_VIDEO_HEADER_SIZE;
+                /* further FLC chunks have some extra data */
+                if(!memcmp(t->videoMxOb.format, FLCfmt, sizeof(FLCfmt))) {
+                    body += OMNI_CHUNK_VIDEO_HEADER_SIZE;
+                    toWrite -= OMNI_CHUNK_VIDEO_HEADER_SIZE;
+                }
+
                 if(fwrite(body, 1, toWrite, outFLC) < toWrite) {
                     fprintf(stderr, "Failed to write audio data: %s\n", strerror(errno));
                     goto error1;
@@ -458,9 +435,6 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
             }
         }
     }
-
-    fprintf(stderr, "%d %d %d %d\n", audioWritten, t->wav.dataSize,
-                                     videoWritten + 128, t->flc.dataSize);
 
     if(fseeko(outWAV, WAV_DATA_SIZE_OFFSET, SEEK_SET) < 0) {
         fprintf(stderr, "Failed to seek to WAV data size offset.\n");
@@ -484,7 +458,12 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
     if(outWAV) fclose(outWAV);
     free(t->c);
 
-    fprintf(stderr, "Wrote to %s.\n\n", t->mainMxOb.trackName);
+    if(t->mainMxOb.trackType == OMNI_TRACK_TYPE_AUDIO) {
+        fprintf(stderr, "Wrote to %s.\n\n", t->mainMxOb.trackName);
+    } else {
+        fprintf(stderr, "Wrote to %s and %s.\n\n", t->videoMxOb.trackName,
+                                                   t->audioMxOb.trackName);
+    }
 
     return(0);
 
@@ -536,10 +515,6 @@ int main(int argc, char **argv) {
         memcpy(t.wav.fmt, fmtHdr, sizeof(t.wav.fmt));
         t.wav.fmtSize = 16;
         memcpy(t.wav.data, dataHdr, sizeof(t.wav.data));
-        t.flc.reserved0 = 0;
-        memset(t.flc.extended, 0, sizeof(t.flc.extended));
-        memset(t.flc.reserved1, 0, sizeof(t.flc.reserved1));
-        memset(t.flc.reserved2, 0, sizeof(t.flc.reserved2));
         if(riff_traverse(r, "MxStMxSt", dump_song_cb, &t) < 0) {
             fprintf(stderr, "Failed to traverse file.\n");
         }
