@@ -24,8 +24,6 @@ typedef struct {
 
 const char RIFFMagic[4];
 const char LISTFourCC[4];
-const char Nodes[3][4];
-const char Leaves[5][4];
 
 int isRIFF(char fourCC[4]);
 int isLIST(char fourCC[4]);

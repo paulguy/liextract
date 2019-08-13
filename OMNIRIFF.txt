@@ -21,7 +21,10 @@ Leaf blocks which contain data:
 MxHd - Some kind of header
 MxOf - Some kind of list of offsets of interest in to the file?
 MxOb - Description of a set of chunks? (object?)
-    1 byte      type: 4 for audio, 7 for video, 3 for video header/frames
+    1 byte      type: 4 for WAVE audio
+                      7 for FLIC/Smacker video
+                      3 for muxed streams/multiple objects
+                      10 for " STL" bitmap
     6 bytes     padding?
     n bytes     null terminated string name of object
     4 bytes     track number?
@@ -40,9 +43,10 @@ MxOb - Description of a set of chunks? (object?)
     4 bytes     unknown, always 0x3FF0?
     12 bytes    always 0
     4 bytes     unknown, always 0x4FF0?
-    8 bytes     always 0
+    6 bytes     always 0
+    2 bytes     length of name of something, skip this many bytes
     
-    The main MxOb in an interleaved video track ends here ...
+    The first MxOb in a muxed/multiple object track ends here ...
 
     n bytes     null terminated file name of object
     8 bytes     always 0
@@ -55,11 +59,8 @@ MxOb - Description of a set of chunks? (object?)
     ... and continues here.
 
     12 bytes    a LIST MxCh header
-    4 bytes     always 2, maybe additional chunks?
-    8 bytes     a MxOb header
-    n bytes     a MxOb chunk for the video stream (type 3)
-    8 bytes     a MxOb header
-    n bytes     a MxOb chunk for the audio stream (type 4)
+    4 bytes     number of additional chunks
+    n bytes     MxOb chunks follow
 
 MxCh - Chunk of data
     2 bytes     usually 0, 16 if partial, last chunk is always 2
@@ -69,7 +70,7 @@ MxCh - Chunk of data
                 including additional partial chunks
     n bytes     data
 
-    First chunks contain additional fields and no data:
+    First chunks contain additional fields or header and no data:
 
     audio chunk:
         WAVE fmt header
@@ -83,28 +84,21 @@ MxCh - Chunk of data
         4 bytes     total data size?
         4 bytes     unknown, always 44, RIFF header size?
 
-    video chunk:
-        FLC header
-        4 bytes     total file size
-        2 bytes     type
-        2 bytes     number of frames
-        2 bytes     width
-        2 bytes     height
-        2 bytes     depth
-        2 bytes     flags
-        2 bytes     delay
-        2 bytes     reserved, always 0
-        4 bytes     creation date
-        4 bytes     creator serial
-        4 bytes     update date
-        4 bytes     updator serial
-        2 bytes     x aspect
-        2 bytes     y aspect
-        14 bytes    extended stuff, unused here
-        24 bytes    reserved, always 0
-        4 bytes     offset to first frame
-        4 bytes     offset to second frame
-        40 bytes    reserved, always 0
+    bitmap chunks (" STL" format):
+        4 bytes     header size, including this value (start of palette?)
+        4 bytes     width
+        4 bytes     height
+        2 bytes     always 1
+        2 bytes     always 8
+        4 bytes     always 0
+        4 bytes     image data size
+        1 byte      always 18 or 19
+        1 byte      always 11
+        2 bytes     always 0
+        1 byte      always the same as byte 24
+        1 byte      always the same as byte 25
+        10 bytes    always 0
+        1024 bytes  palette data, 4 bytes per entry for 256 entries
 
     following frame chunks for " FLC" type contain these fields:
         4 bytes     always 1

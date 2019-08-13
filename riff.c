@@ -4,22 +4,30 @@
 
 #include "riff.h"
 
+/* minimum value necessary to get a list of all SIs */
+#define BRUTE_ISENTRY_TRIES     (7)
+
+#define OMNI_TRACK_TYPE_MUXED   (7)
+
 const char RIFFMagic[4] = {'R', 'I', 'F', 'F'};
 const char LISTFourCC[4] = {'L', 'I', 'S', 'T'};
-const char Nodes[3][4] = 
+const char MxObFourCC[4] = {'M', 'x', 'O', 'b'};
+const char MxStFourCC[4] = {'M', 'x', 'S', 't'};
+const char MxChFourCC[4] = {'M', 'x', 'C', 'h'};
+const char Nodes[][4] = 
     {
         {'R', 'I', 'F', 'F'}, /* root entry */
         {'L', 'I', 'S', 'T'},
         {'M', 'x', 'S', 't'}
     };
 
-const char Leaves[5][4] =
+const char Leaves[][4] =
     {
         {'M', 'x', 'H', 'd'},
         {'M', 'x', 'O', 'f'},
-        {'M', 'x', 'O', 'b'},
         {'p', 'a', 'd', ' '},
-        {'M', 'x', 'C', 'h'}
+        {'M', 'x', 'C', 'h'},
+        {'M', 'x', 'O', 'b'}
     };
 
 int isRIFF(char fourCC[4]) {
@@ -63,7 +71,8 @@ int isLeaf(char fourCC[4]) {
 }
 
 int isEntry(char fourCC[4]) {
-    if(isNode(fourCC) || isLeaf(fourCC)) {
+    if(isNode(fourCC) || isLeaf(fourCC) ||
+       !memcmp(fourCC, MxObFourCC, sizeof(MxObFourCC))) {
         return(1);
     }
 
@@ -119,20 +128,38 @@ int riff_entry_seekto(RIFFFile *r, int index) {
     return(0);
 }
 
+/* probably some alignment rules i'm not familiar with, just brute force it */
+int brute_isEntry(FILE *f, char *fourCC, off_t *pos, int tries) {
+    for(; tries > 0; tries--) {
+        if(fread(fourCC, 1, 4, f) < 4) {
+            fprintf(stderr, "Failed to read entry fourCC.\n");
+            return(-1);
+        }
+        (*pos)++;
+
+        if(isEntry(fourCC)) {
+            (*pos) += 3;
+            return(1);
+        }
+
+        if(fseeko(f, -3, SEEK_CUR) < 0) {
+            fprintf(stderr, "Failed to seek back to entry.\n");
+            return(-1);
+        }
+    }
+
+    return(0);
+}
+
 int riff_populate(RIFFFile *r, int index, int depth) {
     char fourCC[4];
     off_t pos = 0;
-    off_t curpos;
     int cur;
     int i;
-
-/*    fprintf(stderr, "%*d populate %ld %d %ld\n", depth+1, depth,
-            e->start, e->size, riff_entry_offset(e));
-*/
+    short int MxObType = 0;
+    int ret;
 
     if(isLeaf(r->root[index].fourCC)) {
-/*        fprintf(stderr, "%*d leaf\n", depth+1, depth);
-*/
         return(0);
     }
 
@@ -141,12 +168,95 @@ int riff_populate(RIFFFile *r, int index, int depth) {
         return(-1);
     }
 
-    while(pos < r->root[index].size) {
+    /* bunch of annoying stuff to forge the first MxOb */
+    if(!memcmp(r->root[index].fourCC, MxStFourCC, sizeof(MxStFourCC))) {
+        unsigned int MxObSize;
+        unsigned short int unkNameSize;
+
         if(fread(fourCC, 1, sizeof(fourCC), r->f) < sizeof(fourCC)) {
             fprintf(stderr, "Failed to read entry fourCC.\n");
             return(-1);
         }
-        if(isEntry(fourCC)) {
+        if(fread(&MxObSize, 1, sizeof(int), r->f) < sizeof(int)) {
+            fprintf(stderr, "Failed to read entry size.\n");
+            return(-1);
+        }
+        if(fread(&MxObType, 1, sizeof(short int), r->f) < sizeof(short int)) {
+            fprintf(stderr, "Failed to read MxOb type.\n");
+            return(-1);
+        }
+        if(!memcmp(fourCC, MxObFourCC, sizeof(MxObFourCC)) &&
+           MxObType == OMNI_TRACK_TYPE_MUXED) {
+            /* get the main MxOb */
+            cur = riff_grow(r);
+            if(cur == -1) {
+                return(-1);
+            }
+            /* this is the first item so don't need to check */
+            r->root[index].entry = cur;
+            memcpy(&(r->root[cur].fourCC), MxObFourCC, sizeof(r->root[cur].fourCC));
+            r->root[cur].entries = 0;
+            r->root[cur].entry = -1;
+            r->root[cur].parent = index;
+            r->root[cur].start = 8;
+
+            /* If there's a string directly after the value, keep reading. */
+            pos = 10;
+            while(pos < r->root[index].size) {
+                pos++;
+                if(fgetc(r->f) == 0) {
+                    break;
+                }
+            }
+            /* find the start of the name */
+            while(pos < r->root[index].size) {
+                pos++;
+                if(fgetc(r->f) != 0) {
+                    break;
+                }
+            }
+            /* keep consuming the name too */
+            while(pos < r->root[index].size) {
+                pos++;
+                if(fgetc(r->f) == 0) {
+                    break;
+                }
+            }
+
+            /* seek past fixed-sized structure */
+            if(fseeko(r->f, 92, SEEK_CUR) < 0) {
+                fprintf(stderr, "Failed to seek forward.\n");
+                return(-1);
+            }
+            pos += 92;
+
+            if(fread(&unkNameSize, 1, sizeof(short int), r->f) < sizeof(short int)) {
+                fprintf(stderr, "Failed to read unknown name size.\n");
+                return(-1);
+            }
+            pos += 2;
+            /* seek past string */
+            if(fseeko(r->f, unkNameSize, SEEK_CUR) < 0) {
+                fprintf(stderr, "Failed to seek forward.\n");
+                return(-1);
+            }
+            pos += unkNameSize;
+
+            r->root[cur].size = pos;
+            r->root[index].entries++;
+        } else {
+            if(fseeko(r->f, -10, SEEK_CUR) < 0) {
+                fprintf(stderr, "Failed to seek back to entry.\n");
+                return(-1);
+            }
+        }
+    }
+
+    while(pos < r->root[index].size) {
+        ret = brute_isEntry(r->f, fourCC, &pos, BRUTE_ISENTRY_TRIES);
+        if(ret < 0) {
+            return(-1);
+        } else if(ret > 0) {
             cur = riff_grow(r);
             if(cur == -1) {
                 return(-1);
@@ -164,7 +274,7 @@ int riff_populate(RIFFFile *r, int index, int depth) {
                 fprintf(stderr, "Failed to read entry size.\n");
                 return(-1);
             }
-            pos += 8;
+            pos += 4;
             if(isLIST(fourCC)) {
                 if(fread(r->root[cur].fourCC2, 1,
                    sizeof(r->root[cur].fourCC2), r->f) < sizeof(r->root[cur].fourCC2)) {
@@ -173,6 +283,15 @@ int riff_populate(RIFFFile *r, int index, int depth) {
                 }
                 pos += 4;
                 r->root[cur].size -= 4;
+
+                if(!memcmp(r->root[cur].fourCC2, MxChFourCC, sizeof(MxChFourCC))) {
+                    if(fseeko(r->f, 4, SEEK_CUR) < 0) {
+                        fprintf(stderr, "Failed to seek past count.\n");
+                        return(-1);
+                    }
+                    pos += 4;
+                    r->root[cur].size -= 4;
+                }
             }
 
             r->root[cur].start = pos;
@@ -183,19 +302,6 @@ int riff_populate(RIFFFile *r, int index, int depth) {
             }
             pos += r->root[cur].size;
 
-            curpos = riff_entry_offset(r, cur) + r->root[cur].size;
-            if(curpos % 2) {
-                pos++;
-                if(fseeko(r->f, 1, SEEK_CUR) < 0) {
-                    fprintf(stderr, "Failed to seek to alignment.\n");
-                    return(-1);
-                }
-            }
-
-/*            fprintf(stderr, "%*d entry %ld %d %ld %ld %ld %c%c%c%c\n", depth+1, depth,
-                    cur->start, cur->size, riff_entry_offset(cur), pos, ftello(r->f),
-                    cur->fourCC[0], cur->fourCC[1], cur->fourCC[2], cur->fourCC[3]);
-*/
             r->root[index].entries++;
         } else {
             fprintf(stderr, "Unknown fourCC %08X at %ld\n",
