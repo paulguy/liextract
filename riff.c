@@ -6,6 +6,7 @@
 
 /* minimum value necessary to get a list of all SIs */
 #define BRUTE_ISENTRY_TRIES     (7)
+#define CHUNK_MINIMUM_SIZE      (12)
 
 #define OMNI_TRACK_TYPE_MUXED   (7)
 
@@ -252,7 +253,7 @@ int riff_populate(RIFFFile *r, int index, int depth) {
         }
     }
 
-    while(pos < r->root[index].size) {
+    while(pos < r->root[index].size - CHUNK_MINIMUM_SIZE) {
         ret = brute_isEntry(r->f, fourCC, &pos, BRUTE_ISENTRY_TRIES);
         if(ret < 0) {
             return(-1);
