@@ -30,6 +30,7 @@ int isLIST(char fourCC[4]);
 int isNode(char fourCC[4]);
 int isLeaf(char fourCC[4]);
 int isEntry(char fourCC[4]);
+int isMuxed(short int type);
 RIFFFile *riff_init();
 off_t riff_entry_offset(RIFFFile *r, int index);
 int riff_entry_seekto(RIFFFile *r, int index);
@@ -45,3 +46,4 @@ int riff_traverse(RIFFFile *r,
                   const char *pattern,
                   int (*match_cb)(RIFFFile *r, int dir, int ent, void *priv),
                   void *priv);
+int print_entry_cb(RIFFFile *r, int dir, int ent, void *priv);

@@ -9,7 +9,6 @@
 #define INT_FROM_ARRAY(ARRAY, INDEX) (*(int *)(&((ARRAY)[(INDEX)])))
 
 #define OMNI_TRACK_TYPE_WAVE    (4)
-#define OMNI_TRACK_TYPE_MUXED   (7)
 #define OMNI_TRACK_TYPE_RAW     (3)
 #define OMNI_TRACK_TYPE_BITMAP  (10)
 
@@ -87,36 +86,18 @@ typedef struct {
     /* for STL bitmap objects */
     TGAHeader tga;
 
-    char *trackName;
+    char trackName[64];
     short int trackType;
     unsigned int trackNum;
-    int unk0;
-    int unk1;
-    int unk2;
-    int unk3;
-    int unk4;
-    short int unkNameLength;
 
-    /* for video types, these values are not in the main MxOb */
-    char *fileName;
+    /* for muxed types, these values are not in the main MxOb */
+    char fileName[256];
     char format[4];
-    int unk5;
-
-    /* for muxed type, the number of objects following */
-    unsigned int objects;
-
-    /* additional fields for raw type */
-    short int unk6;
-    int unk7;
-    int unk8;
-    int unk9;
 } MxOb;
 
 typedef struct {
     int index;
 
-    unsigned char MxObData[65536];
-    unsigned int MxObLength;
     MxOb *mxob;
     unsigned int mxobs;
 
@@ -126,36 +107,6 @@ typedef struct {
     Chunk *c;
     unsigned int chunks;
 } Track;
-
-int print_entry_cb(RIFFFile *r, int dir, int ent, void *priv) {
-    int depth = 1;
-    off_t filePos = 0;
-    int ent2;
-    int index = RIFF_ENTRY(r, dir, ent);
-    const char *fourCC;
-    char type;
-
-    for(ent2 = index; ent2 != 0; ent2 = r->root[ent2].parent) {
-        filePos += r->root[ent2].start;
-        depth++;
-    }
-
-    fourCC = r->root[index].fourCC;
-    if(isNode(r->root[index].fourCC)) {
-        if(isLIST(r->root[index].fourCC)) {
-            fourCC = r->root[index].fourCC2;
-        }
-        type = 'd';
-    } else {
-        type = 'f';
-    }
-
-    printf("%*c %3d %9lu %9lu %8d %c%c%c%c\n", depth, type, ent,
-           r->root[index].start, filePos, r->root[index].size,
-           fourCC[0], fourCC[1], fourCC[2], fourCC[3]);
-
-    return(0);
-}
 
 MxOb *mxob_grow(Track *t) {
     MxOb *m2;
@@ -173,9 +124,9 @@ MxOb *mxob_grow(Track *t) {
 }
 
 int populate_mxob(Track *t, unsigned char *buf, unsigned int length) {
-    int len;
     MxOb *o;
     unsigned int dataPos = 0;
+    unsigned int nameLength;
 
     o = mxob_grow(t);
     if(o == NULL) {
@@ -204,44 +155,33 @@ int populate_mxob(Track *t, unsigned char *buf, unsigned int length) {
         }
     }
 
-    o->trackName = (char *)&(buf[dataPos]);
-    dataPos += strlen(o->trackName) + 1;
+    nameLength = strlen((char *)&(buf[dataPos]));
+    if(nameLength >= sizeof(o->trackName)) {
+        fprintf(stderr, "Track name too long.\n");
+        return(-1);
+    }
+    strncpy(o->trackName, (char *)&(buf[dataPos]), sizeof(o->trackName));
+    dataPos += nameLength + 1;
 
     o->trackNum = INT_FROM_ARRAY(buf, dataPos);
-    o->unk0 = INT_FROM_ARRAY(buf, dataPos + 4);
-    o->unk1 = INT_FROM_ARRAY(buf, dataPos + 12);
-    o->unk2 = INT_FROM_ARRAY(buf, dataPos + 16);
-    if(o->trackType == OMNI_TRACK_TYPE_RAW) {
-        o->unk6 = SHORT_FROM_ARRAY(buf, dataPos + 24);
-        o->unk7 = INT_FROM_ARRAY(buf, dataPos + 26);
-        o->unk8 = INT_FROM_ARRAY(buf, dataPos + 34);
-        o->unk9 = INT_FROM_ARRAY(buf, dataPos + 42);
-    }
-    o->unk3 = INT_FROM_ARRAY(buf, dataPos + 66);
-    o->unk4 = INT_FROM_ARRAY(buf, dataPos + 82);
-    o->unkNameLength = SHORT_FROM_ARRAY(buf, dataPos + 92);
-    if(o->trackType != OMNI_TRACK_TYPE_MUXED) {
-        o->fileName = (char *)&(buf[dataPos + 94]);
-        dataPos += 94 + strlen(o->fileName) + 1;
-        memcpy(o->format, &(buf[dataPos + 12]), sizeof(o->format));
-        if(t != NULL) { /* not available if it's a member of a video track */
-            o->unk5 = INT_FROM_ARRAY(buf, dataPos + 24);
+
+    if(!isMuxed(o->trackType)) {
+        dataPos += 92;
+        nameLength = *(unsigned short int *)&(buf[dataPos]);
+        dataPos += 2;
+        if(nameLength > 0) {
+            dataPos += nameLength;
         }
-    } else {
-        dataPos += o->unkNameLength;
-        dataPos += 94 + 12; /* skip over MxOb chunk and LIST header */
-        o->objects = INT_FROM_ARRAY(buf, dataPos);
-        dataPos += 4; /* skip over value */
-        while(dataPos < length - 1) {
-            len = INT_FROM_ARRAY(buf, dataPos + 4); /* read length of MxCh chunk */
-            len += (len % 2) ? 1 : 0; /* seems to need 2 byte alignment for length like other chunks */
-            dataPos += 8; /* skip over MxOb header */
-            if(populate_mxob(t, &(buf[dataPos]), len) < 0) {
-                return(-1);
-            }
-            dataPos += len; /* skip over MxOb chunk */
+        nameLength = strlen((char *)&(buf[dataPos]));
+        if(nameLength >= sizeof(o->fileName)) {
+            fprintf(stderr, "Track file name too long.\n");
+            return(-1);
         }
+        strncpy(o->fileName, (char *)&(buf[dataPos]), sizeof(o->fileName));
+        dataPos += nameLength + 1 + 12;
+        memcpy(o->format, &(buf[dataPos]), sizeof(o->format));
     }
+        
 
     return(0);
 }
@@ -249,8 +189,10 @@ int populate_mxob(Track *t, unsigned char *buf, unsigned int length) {
 int get_track_info_cb(RIFFFile *r, int dir, int ent, void *priv) {
     int index = RIFF_ENTRY(r, dir, ent);
     Track *t = priv;
+    unsigned int MxObLength;
+    unsigned char MxObData[65536];
 
-    if(r->root[index].size > sizeof(t->MxObData)) {
+    if(r->root[index].size > sizeof(MxObData)) {
         fprintf(stderr, "MxOb too big.\n");
         return(-1);
     }
@@ -260,17 +202,17 @@ int get_track_info_cb(RIFFFile *r, int dir, int ent, void *priv) {
         return(-1);
     }
 
-    t->MxObLength = r->root[index].size;
-    if(fread(t->MxObData, 1, t->MxObLength, r->f) < t->MxObLength) {
+    MxObLength = r->root[index].size;
+    if(fread(MxObData, 1, MxObLength, r->f) < MxObLength) {
         fprintf(stderr, "Failed to read MxOb.\n");
         return(-1);
     }
 
-    if(populate_mxob(t, t->MxObData, t->MxObLength) < 0) {
+    if(populate_mxob(t, MxObData, MxObLength) < 0) {
         return(-1);
     }
 
-    return(1); /* stop searching */
+    return(0);
 }
 
 Chunk *track_grow(Track *t) {
@@ -387,20 +329,10 @@ int read_chunks_cb(RIFFFile *r, int dir, int ent, void *priv) {
 void print_mxob(MxOb *o) {
     printf("Name: %s\n"
            "Type: %d\n"
-           "Track num: %d\n"
-           "Unknown 0: %d\n"
-           "Unknown 1: %d\n"
-           "Unknown 2: %d\n"
-           "Unknown 3: %08X\n"
-           "Unknown 4: %08X\n",
+           "Track num: %d\n",
            o->trackName,
            o->trackType,
-           o->trackNum,
-           o->unk0,
-           o->unk1,
-           o->unk2,
-           o->unk3,
-           o->unk4);
+           o->trackNum);
 }
 
 int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
@@ -423,48 +355,43 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
         goto error0;
     }
 
-    printf("Index: %d\n"
-           "Main MxOb\n",
-           t->index);
-    print_mxob(&(t->mxob[0]));
+    if(isMuxed(t->mxob[0].trackType)) {
+        if(do_traverse(r, "MxChMxOb", get_track_info_cb, t, 0, t->index) < 0) {
+            goto error0;
+        }
+    }
 
-    if(t->mxob[0].trackType != OMNI_TRACK_TYPE_MUXED) {
-        printf("File name: %s\n"
-               "Unknown 5: %d\n",
-               t->mxob[0].fileName,
-               t->mxob[0].unk5);
-    } else {
-        printf("Sub Objects: %d\n",
-               t->mxob[0].objects);
-        for(i = 1; i < t->mxobs; i++) {
+    /* some weird ones */
+    if(isMuxed(t->mxob[0].trackType)) {
+        if(do_traverse(r, "MxChMxChMxOb", get_track_info_cb, t, 0, t->index) < 0) {
+            goto error0;
+        }
+    }
+
+    /* some are even 3 deep! */
+    if(isMuxed(t->mxob[0].trackType)) {
+        if(do_traverse(r, "MxChMxChMxChMxOb", get_track_info_cb, t, 0, t->index) < 0) {
+            goto error0;
+        }
+    }
+
+    for(i = 0; i < t->mxobs; i++) {
+        printf("Index: %d\n", i);
+        if(isMuxed(t->mxob[i].trackType)) {
+            printf("Muxed MxOb\n");
+        } else {
             if(t->mxob[i].trackType == OMNI_TRACK_TYPE_WAVE) {
-                printf("WAVE MxOb\n"
-                       "Index: %d\n",
-                       i);
-                print_mxob(&(t->mxob[i]));
-                printf("File name: %s\n"
-                       "Unknown 5: %d\n",
-                       t->mxob[i].fileName,
-                       t->mxob[i].unk5);
+                printf("WAVE MxOb\n");
+                printf("File name: %s\n",
+                       t->mxob[i].fileName);
             } else {
-                printf("raw file data MxOb\n"
-                       "Index: %d\n",
-                       i);
-                print_mxob(&(t->mxob[i]));
-                printf("File name: %s\n"
-                       "Unknown 5: %d\n"
-                       "Unknown 6: %hd\n"
-                       "Unknown 7: %d\n"
-                       "Unknown 8: %d\n"
-                       "Unknown 9: %d\n",
-                       t->mxob[i].fileName,
-                       t->mxob[i].unk5,
-                       t->mxob[i].unk6,
-                       t->mxob[i].unk7,
-                       t->mxob[i].unk8,
-                       t->mxob[i].unk9);
+                printf("Raw file data MxOb\n");
+                printf("File name: %s\n",
+                       t->mxob[i].fileName);
             }
         }
+        print_mxob(&(t->mxob[i]));
+        printf("\n");
     }
 
     t->chunks = 0;
@@ -489,7 +416,7 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
             goto error2;
         }
         /* not concerned about the container */
-        if(o->trackType == OMNI_TRACK_TYPE_MUXED) {
+        if(isMuxed(o->trackType)) {
             continue;
         }
 
@@ -570,7 +497,7 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
 
         if(t->mxob[i].out != NULL) {
             fclose(t->mxob[i].out);
-        } else if(t->mxob[i].trackType != OMNI_TRACK_TYPE_MUXED) {
+        } else if(!isMuxed(t->mxob[i].trackType)) {
             fprintf(stderr, "%s with track number %d never had any packets.\n",
                             t->mxob[i].trackName, t->mxob[i].trackNum);
         }
