@@ -404,17 +404,20 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
     printf("Read %d chunks.\n", t->chunks);
 
     for(i = 0; i < t->chunks; i++) {
-        /* don't care about empty chunks */
-        if(t->c[i].chunkType == OMNI_CHUNK_TYPE_LAST) {
-            continue;
-        }
-
         o = get_trackNum(t, t->c[i].trackNum);
         if(o == NULL) {
             fprintf(stderr, "Couldn't find object associated with track %u.\n",
                             t->c[i].trackNum);
             goto error2;
         }
+
+        printf("%d: %d %d %d\n", i, o->trackNum, t->c[i].size, t->c[i].timestamp);
+
+        /* don't care about empty chunks */
+        if(t->c[i].chunkType == OMNI_CHUNK_TYPE_LAST) {
+            continue;
+        }
+
         /* not concerned about the container */
         if(isMuxed(o->trackType)) {
             continue;
@@ -468,8 +471,6 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
                     o->wav.dataSize += toWrite;
                 }
             }
-
-            printf("%d: %d %d %d\n", i, o->trackNum, toWrite, t->c[i].timestamp);
         }
     }
 
@@ -502,6 +503,8 @@ int dump_song_cb(RIFFFile *r, int dir, int ent, void *priv) {
                             t->mxob[i].trackName, t->mxob[i].trackNum);
         }
     }
+
+    printf("\n");
 
     free(t->c);
     free(t->mxob);
